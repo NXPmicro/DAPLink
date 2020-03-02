@@ -21,6 +21,9 @@
 #include "target_family.h"
 #include "swd_host.h"
 #include "cmsis_os2.h"
+#include "daplink_debug.h"
+
+#define NVIC_Addr               (0xE000E000)
 
 #define DBG_Addr                (0xE000EDF0)
 #define DWT_COMP0               (0xE0001020)
@@ -38,24 +41,28 @@
 static uint8_t lpc55s6x_target_set_state(target_state_t state)
 {
     uint32_t val;
+    uint32_t i;
     int8_t ap_retries = 2;
 
     if (state == RESET_PROGRAM) {
         if (!swd_init_debug()) {
+            debug_msg("Init Fail\r\n");
             return 0;
         }
 
         // Enable debug
         while(swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN) == 0) {
-            if( --ap_retries <=0 )
+            if( --ap_retries <=0 ) {
+                debug_msg("Failed to enable debug\r\n");
                 return 0;
+            }
             // Target is in invalid state?
             swd_set_target_reset(1);
             osDelay(2);
             swd_set_target_reset(0);
             osDelay(2);
         }
-
+#if 0
         // Set Trace Enable bit
         if (!swd_read_word(DBG_EMCR, &val)) {
             return 0;
@@ -86,17 +93,95 @@ static uint8_t lpc55s6x_target_set_state(target_state_t state)
         }
 
         osDelay(5);
+#endif
+
+        //if (val == 0x8) {
+            // Might be a newer silicon revision
+            // Write Reset + Resynch request using the debug mailbox
+            val = 0;
+            if (!swd_read_ap(DEBUGMB_ID, &val)) {
+                debug_msg("1.Read mailbox ID fail\r\n");
+                return 0;
+            }
+
+            //debug_msg("1.MB ID fail=%x\r\n", val);
+
+            if (!swd_write_ap(DEBUGMB_CSW, 0x21)) {
+                debug_msg("Write reset fail\r\n");
+                return 0;
+            }
+
+            osDelay(5);
+
+            // Poll CSW register for zero return, indicating success
+            val = 1;
+            while (val != 0) {
+                if (!swd_read_ap(DEBUGMB_CSW, &val)) {
+                    debug_msg("Read DEBUGMB_CSW fail\r\n");
+                    return 0;
+                }
+            }
+            //debug_msg("CSW=%x\r\n", val);
+
+
+            val = 0;
+            if (!swd_read_ap(DEBUGMB_ID, &val)) {
+                debug_msg("1.5.Read mailbox ID fail\r\n");
+                return 0;
+            }
+
+            //debug_msg("1.5.MB ID=%x\r\n", val);
+
+            // Write START_DEBUG_SESSION command to request register
+            if (!swd_write_ap(DEBUGMB_REQ, 0x7)) {
+                debug_msg("Write 7 fail\r\n");
+                return 0;
+            }
+
+            osDelay(5);
+
+            // Poll return register for zero return
+            val = 1;
+            while ((val & 0xFFFF) != 0) {
+                if (!swd_read_ap(DEBUGMB_RET, &val)) {
+                    debug_msg("DEBUGMB_RET fail\r\n");
+                    return 0;
+                }
+            }
+            //debug_msg("RET=%x\r\n", val);
+
+            osDelay(100);
+        //}
+
+        //do an abort on stale target
+        swd_write_dp(DP_ABORT, DAPABORT);
+
+        // Enable debug and halt the core (DHCSR <- 0xA05F0003)
+        if (!swd_write_word(DBG_HCSR, DBGKEY | C_DEBUGEN | C_HALT)) {
+            debug_msg("DHCSR write FAIL\r\n");
+            return 0;
+        }
+
+
+        ap_retries = 100000;
 
         do {
             if (!swd_read_word(DBG_HCSR, &val)) {
+                debug_msg("DHCSR FAIL\r\n");
+                return 0;
+            }
+            if( --ap_retries <=0 ) {
+                debug_msg("Failed to halt, val=%x\r\n", val);
+                if (val & S_HALT) {
+                    debug_msg("S_HALT set\r\n");
+                    //return 1;
+                }
                 return 0;
             }
         } while ((val & S_HALT) == 0);
 
-        // Disable halt on reset
-        if (!swd_write_word(DBG_EMCR, 0)) {
-            return 0;
-        }
+        // Update the comparator function register
+        //swd_write_word(DWT_FUNCTION0, 0);
 
         return 1;
 

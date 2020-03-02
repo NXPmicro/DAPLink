@@ -28,6 +28,7 @@
 #include "DAP.h"
 #include "target_family.h"
 #include "device.h"
+#include "daplink_debug.h"
 
 // Default NVIC and Core debug base addresses
 // TODO: Read these addresses from ROM.
@@ -152,6 +153,9 @@ uint8_t swd_read_dp(uint8_t adr, uint32_t *val)
     *val |= (tmp << 8);
     tmp = tmp_out[0];
     *val |= (tmp << 0);
+    if (ack != DAP_TRANSFER_OK) {
+        debug_msg("ACK=%d\r\n", ack);
+    }
     return (ack == 0x01);
 }
 
@@ -172,6 +176,9 @@ uint8_t swd_write_dp(uint8_t adr, uint32_t val)
     ack = swd_transfer_retry(req, (uint32_t *)data);
     if ((ack == DAP_TRANSFER_OK) && (adr == DP_SELECT)) {
         dap_state.select = val;
+    }
+    if (ack != DAP_TRANSFER_OK) {
+        //debug_msg("ACK=%d\r\n", ack);
     }
     return (ack == 0x01);
 }
